@@ -14,6 +14,9 @@ from openai import OpenAI
 importlib.reload(LanguageModels)
 from LanguageModels import CallLLM, BatchUploader, BatchChecker, BatchRetriever
 
+import os
+os.system("pip install --upgrade scikit-learn")
+
 def Classificatron3000(df, labels: dict, emb_similarity, rel_scores, top=10):
     def Help():
         text = """
