@@ -2,15 +2,12 @@ import json
 import os
 import openai
 import anthropic
+import streamlit as st
 import sys
-
-# Remove unused imports
-# from IPython.display import clear_output
-
-# Load secrets (still reading from a local file — adapt if desired)
-with open("C:/Users/HP/Python/Jupyter Notebook/CustomLibs/LLM/secret.json") as file:
-    keys = json.load(file)
-
+keys = {
+    "gpt4": st.secrets["openai"]["api_key"]
+    #"claude": st.secrets["anthropic"]["api_key"]
+}
 
 def Help() -> None:
     text = """
