@@ -24,7 +24,6 @@ def Classificatron3000(
     emb_similarity,
     rel_scores,
     top=10,
-    # ➡ New parameters for your custom prompts
     context_prompt_1=None,
     question_prompt_1=None,
     context_prompt_2=None,
@@ -45,7 +44,7 @@ def Classificatron3000(
         context_prompt_2/question_prompt_2: custom prompt for the second classification step.
     """
 
-    # 1) If no embeddings provided, compute them via OpenAI
+    # If no embeddings, compute them via OpenAI
     if emb_similarity is None:
         openai.api_key = st.secrets["openai"]["api_key"]
 
@@ -73,7 +72,7 @@ def Classificatron3000(
         labels_df = pd.DataFrame(embeddings_data)
         emb_similarity = (emb_similarity_df, labels_df)
 
-    # 2) If we have a tuple => compute similarity matrix
+    # If tuple => compute similarity matrix
     if isinstance(emb_similarity, tuple):
         features_emb = emb_similarity[0]
         labels_emb = emb_similarity[1]
@@ -100,13 +99,12 @@ def Classificatron3000(
         )
         similarities.columns.name = None
         similarities.reset_index(inplace=True)
-        # Reorder columns to match labels.keys()
         similarities = similarities[["Feature"] + list(labels.keys())]
     else:
-        # Otherwise, emb_similarity should be the final similarity DataFrame
+        # Otherwise, it should be a final similarity DataFrame
         similarities = emb_similarity
 
-    # 3) Melt similarity into tall format
+    # Melt similarity into tall format
     df_output = similarities.melt(
         id_vars=["Feature"],
         var_name="Label",
@@ -122,7 +120,7 @@ def Classificatron3000(
         ascending=False, method='dense'
     ).astype(int)
 
-    # 4) Relatedness matrix
+    # Relatedness matrix
     features_from = rel_scores['from'].unique()
     features_to = rel_scores['to'].unique()
     all_features = np.union1d(features_from, features_to)
@@ -171,7 +169,7 @@ def Classificatron3000(
         ascending=False, method='dense'
     ).astype(int)
 
-    # 5) Final combined ranking
+    # Final combined ranking
     df_output['CombinedRank'] = (df_output['Rank1'] + df_output['Rank2']) / 2
     df_output['Rank3'] = df_output.groupby('Feature')['CombinedRank'].rank(
         method='first'
@@ -187,37 +185,36 @@ def Classificatron3000(
     for idx, row in new_df.iterrows():
         feature_dict[row["Feature"]].append(row["Label"] + f" ({labels[row['Label']]})")
 
-    # ⬇️ 6) Use the user-defined prompts from the function parameters
-    # ---- FIRST CLASSIFICATION PROMPT ----
-    # If user didn't provide them, fallback to default
+    # === FIRST CLASSIFICATION PROMPT ===
     if not context_prompt_1:
         context_prompt_1 = f"""
-            Your task is to rank labels relevance to a specific feature based on how heavily the label draws on technical knowledge from this specific feature.
-            The available labels are:
+        Your task is to rank labels relevance to a specific feature based on how heavily the label draws on technical knowledge from this specific feature.
+        The available labels are:
 
-            <\\labels\\>
+        <\\labels\\>
 
-            Ranking Rules:
-            - Use a scale of 1-{top} where 1 = most relevant label of the list, and {top} = least relevant label of the list.
-            - Base rankings on:
-              * Direct application
-              * Technical overlap with the feature
-              * Relevance
-              * Label's reliance on the feature's core principles
-              * Integration in core products
-              * Significance of the label for the feature
-            - Ties are NOT allowed
+        Ranking Rules:
+        - Use a scale of 1-{top} where 1 = most relevant label of the list, and {top} = least relevant label of the list.
+        - Base rankings on:
+          * Direct application
+          * Technical overlap with the feature
+          * Relevance
+          * Label's reliance on the feature's core principles
+          * Integration in core products
+          * Significance of the label for the feature
+        - Ties are NOT allowed
 
-            Output Format if you had 3 labels (label names must be between quotes):
+        Output Format if you had 3 labels (label names must be between quotes):
 
-                {{"Label1": rank, "Label2": rank, "Label3": rank}}
+            {{"Label1": rank, "Label2": rank, "Label3": rank}}
 
-            Don't add anything else to your response.
-        """
+        Don't add anything else to your response.
+        """.strip()
+
     if not question_prompt_1:
-        question_prompt_1 = """
-            Given this context, provide your answer in the instructed format for this Feature:
-        """
+        question_prompt_1 = (
+            "Given this context, provide your answer in the instructed format for this Feature:"
+        )
 
     send_df = new_df[["Feature", "description"]].drop_duplicates().reset_index(drop=True)
     send_df["id"] = send_df.index
@@ -257,39 +254,41 @@ def Classificatron3000(
             pass
         matching_rows = df_output[df_output["Feature"] == feature]
         for idx, current_row in matching_rows.iterrows():
-            if current_row["Label"] in response_dict:
-                df_output.at[idx, "RankGPT"] = response_dict[current_row["Label"]]
+            lbl = current_row["Label"]
+            if lbl in response_dict:
+                df_output.at[idx, "RankGPT"] = response_dict[lbl]
 
-    # ---- SECOND CLASSIFICATION PROMPT ----
+    # === SECOND CLASSIFICATION PROMPT ===
     if not context_prompt_2:
         context_prompt_2 = """
-            Your task is to determine whether a Label is relevant to a specific Feature by thinking in how heavily the Label draws on technical knowledge from this specific Feature. 
-            Available Labels:
+        Your task is to determine whether a Label is relevant to a specific Feature by thinking in how heavily the Label draws on technical knowledge from this specific Feature. 
+        Available Labels:
 
-            <\\labels\\>
+        <\\labels\\>
 
-            Rules:
-            - Answer 0 if the Label is not relevant, 1 if it is.
-            - Base your answers on:
-              * Direct application
-              * Technical overlap with the feature
-              * Relevance
-              * Label's reliance on the feature's core principles
-              * Integration in core products
-              * Significance of the label for the feature
-            - You'll gain a point for every Label that you get correctly classified, but will lose 10 points for every Label incorrectly classified as 1.
-            - Aim to get the highest amount of points.
+        Rules:
+        - Answer 0 if the Label is not relevant, 1 if it is.
+        - Base your answers on:
+          * Direct application
+          * Technical overlap with the feature
+          * Relevance
+          * Label's reliance on the feature's core principles
+          * Integration in core products
+          * Significance of the label for the feature
+        -You'll gain a point for every Label that you get correctly classified, but will lose 10 points for every Label incorrectly classified as 1.
+        -Aim to get the highest amount of points.
 
-            Output Format if you had 3 labels (label names must be between quotes):
+        Output Format if you had 3 labels (label names must be between quotes):
 
-                {"Label1": response, "Label2": response, "Label3": response}
+            {"Label1": response, "Label2": response, "Label3": response}
 
-            Don't add anything else to your response.
-        """
+        Don't add anything else to your response.
+        """.strip()
+
     if not question_prompt_2:
-        question_prompt_2 = """
-            Given this context, provide your answer in the instructed format for this Feature:
-        """
+        question_prompt_2 = (
+            "Given this context, provide your answer in the instructed format for this Feature:"
+        )
 
     send_df = new_df[["Feature", "description"]].drop_duplicates().reset_index(drop=True)
     send_df["id"] = send_df.index
@@ -328,8 +327,9 @@ def Classificatron3000(
             continue
         matching_rows = df_output[df_output["Feature"] == feature]
         for idx, current_row in matching_rows.iterrows():
-            if current_row["Label"] in response_dict:
-                df_output.at[idx, "FinalCheck"] = response_dict[current_row["Label"]]
+            lbl = current_row["Label"]
+            if lbl in response_dict:
+                df_output.at[idx, "FinalCheck"] = response_dict[lbl]
 
     # Save final files
     try:
@@ -449,93 +449,100 @@ def main():
                 pd.read_csv(uploaded_tuple_2)
             )
 
-    # 6) **Prompts Section**
+    # 6) Custom Prompts
     st.subheader("5) Custom Prompts")
     st.markdown(
-        "Below are two prompts used in two classification steps. "
+        "Below are **two sets of prompts** used in two classification steps. "
         "**Note**: The special placeholder `<\\labels\\>` will be replaced "
-        "by your label dictionary (e.g., if you have LabelA, LabelB, it becomes "
-        "'LabelA (DescriptionA); LabelB (DescriptionB)' )."
+        "by your label dictionary (e.g. if you have `'LabelA': 'Desc A'` and `'LabelB': 'Desc B'`, "
+        "it becomes `LabelA (Desc A); LabelB (Desc B)`)."
     )
 
-    # Prompt 1
-    default_context_1 = f"""
-    Your task is to rank labels relevance to a specific feature based on how heavily the label draws on technical knowledge from this specific feature.
-    The available labels are:
+    # Make two columns for prompts
+    col1, col2 = st.columns(2)
 
-    <\\labels\\>
+    # Column 1 => FIRST CLASSIFICATION PROMPTS
+    with col1:
+        st.markdown("#### First Classification Prompts")
+        default_context_1 = f"""
+        Your task is to rank labels relevance to a specific feature based on how heavily the label draws on technical knowledge from this specific feature.
+        The available labels are:
 
-    Ranking Rules:
-    - Use a scale of 1-{top_value} where 1 = most relevant label of the list, and {top_value} = least relevant label of the list.
-    - Base rankings on:
-      * Direct application
-      * Technical overlap with the feature
-      * Relevance
-      * Label's reliance on the feature's core principles
-      * Integration in core products
-      * Significance of the label for the feature
-    - Ties are NOT allowed
+        <\\labels\\>
 
-    Output Format if you had 3 labels (label names must be between quotes):
+        Ranking Rules:
+        - Use a scale of 1-{top_value} where 1 = most relevant label of the list, and {top_value} = least relevant label of the list.
+        - Base rankings on:
+          * Direct application
+          * Technical overlap with the feature
+          * Relevance
+          * Label's reliance on the feature's core principles
+          * Integration in core products
+          * Significance of the label for the feature
+        - Ties are NOT allowed
 
-        {{"Label1": rank, "Label2": rank, "Label3": rank}}
+        Output Format if you had 3 labels (label names must be between quotes):
 
-    Don't add anything else to your response.
-    """.strip()
+            {{"Label1": rank, "Label2": rank, "Label3": rank}}
 
-    default_question_1 = "Given this context, provide your answer in the instructed format for this Feature:"
+        Don't add anything else to your response.
+        """.strip()
 
-    context_prompt_1 = st.text_area(
-        "Context Prompt 1 (Ranking Prompt):",
-        value=default_context_1,
-        height=200
-    )
-    question_prompt_1 = st.text_area(
-        "Question Prompt 1:",
-        value=default_question_1,
-        height=68
-    )
+        default_question_1 = "Given this context, provide your answer in the instructed format for this Feature:"
 
-    # Prompt 2
-    default_context_2 = """
-    Your task is to determine whether a Label is relevant to a specific Feature by thinking in how heavily the Label draws on technical knowledge from this specific Feature. 
-    Available Labels:
+        context_prompt_1 = st.text_area(
+            "Context Prompt 1 (Ranking Prompt):",
+            value=default_context_1,
+            height=200
+        )
+        question_prompt_1 = st.text_area(
+            "Question Prompt 1:",
+            value=default_question_1,
+            height=68
+        )
 
-    <\\labels\\>
+    # Column 2 => SECOND CLASSIFICATION PROMPTS
+    with col2:
+        st.markdown("#### Second Classification Prompts")
+        default_context_2 = """
+        Your task is to determine whether a Label is relevant to a specific Feature by thinking in how heavily the Label draws on technical knowledge from this specific Feature. 
+        Available Labels:
 
-    Rules:
-    - Answer 0 if the Label is not relevant, 1 if it is.
-    - Base your answers on:
-      * Direct application
-      * Technical overlap with the feature
-      * Relevance
-      * Label's reliance on the feature's core principles
-      * Integration in core products
-      * Significance of the label for the feature
-    -You'll gain a point for every Label that you get correctly classified, but will lose 10 points for every Label incorrectly classified as 1.
-    -Aim to get the highest amount of points.
+        <\\labels\\>
 
-    Output Format if you had 3 labels (label names must be between quotes):
+        Rules:
+        - Answer 0 if the Label is not relevant, 1 if it is.
+        - Base your answers on:
+          * Direct application
+          * Technical overlap with the feature
+          * Relevance
+          * Label's reliance on the feature's core principles
+          * Integration in core products
+          * Significance of the label for the feature
+        -You'll gain a point for every Label that you get correctly classified, but will lose 10 points for every Label incorrectly classified as 1.
+        -Aim to get the highest amount of points.
 
-        {"Label1": response, "Label2": response, "Label3": response}
+        Output Format if you had 3 labels (label names must be between quotes):
 
-    Don't add anything else to your response.
-    """.strip()
+            {"Label1": response, "Label2": response, "Label3": response}
 
-    default_question_2 = "Given this context, provide your answer in the instructed format for this Feature:"
+        Don't add anything else to your response.
+        """.strip()
 
-    context_prompt_2 = st.text_area(
-        "Context Prompt 2 (Relevance Prompt):",
-        value=default_context_2,
-        height=200
-    )
-    question_prompt_2 = st.text_area(
-        "Question Prompt 2:",
-        value=default_question_2,
-        height=68
-    )
+        default_question_2 = "Given this context, provide your answer in the instructed format for this Feature:"
 
-    # 7) Run Classification
+        context_prompt_2 = st.text_area(
+            "Context Prompt 2 (Relevance Prompt):",
+            value=default_context_2,
+            height=200
+        )
+        question_prompt_2 = st.text_area(
+            "Question Prompt 2:",
+            value=default_question_2,
+            height=68
+        )
+
+    # RUN CLASSIFICATION
     if st.button("Run Classification"):
         if uploaded_df is not None and uploaded_rel is not None:
             df = pd.read_csv(uploaded_df)
@@ -548,7 +555,7 @@ def main():
                 st.error("Error in Labels Dictionary. Make sure it's valid JSON.")
                 return
 
-            # If embeddings set to None in the dropdown
+            # If embeddings set to None
             if emb_option == "None":
                 emb_data = None
 
