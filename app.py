@@ -231,7 +231,7 @@ def Classificatron3000(
         model="gpt-4o",
         max_tokens=2000,
         temp=0.0,
-        description="Classificatron3000 classification PART 1",
+        description="Classification PART 1",
         path="C:/Users/HP/downloads/Batches"
     )
 
@@ -305,7 +305,7 @@ def Classificatron3000(
         model="gpt-4o",
         max_tokens=2000,
         temp=0.0,
-        description="Classificatron3000 classification PART 2",
+        description="Classification PART 2",
         path="C:/Users/HP/downloads/Batches"
     )
 
@@ -354,7 +354,7 @@ def Classificatron3000(
 
 
 def main():
-    st.title("Classificatron3000")
+    st.title("Classificatron3000 v1.0")
 
     # 1) Main DataFrame
     st.subheader("1) Main DataFrame CSV")
@@ -454,7 +454,7 @@ def main():
     st.markdown(
         "Below are **two sets of prompts** used in two classification steps. "
         "**Note**: The special placeholder `<\\labels\\>` will be replaced "
-        "by your label dictionary (e.g. if you have `'LabelA': 'Desc A'` and `'LabelB': 'Desc B'`, "
+        "by the label dictionary (e.g. if we have `'LabelA': 'Desc A'` and `'LabelB': 'Desc B'`, "
         "it becomes `LabelA (Desc A); LabelB (Desc B)`)."
     )
 
@@ -493,7 +493,7 @@ def main():
         context_prompt_1 = st.text_area(
             "Context Prompt 1 (Ranking Prompt):",
             value=default_context_1,
-            height=200
+            height=400
         )
         question_prompt_1 = st.text_area(
             "Question Prompt 1:",
@@ -534,7 +534,7 @@ def main():
         context_prompt_2 = st.text_area(
             "Context Prompt 2 (Relevance Prompt):",
             value=default_context_2,
-            height=200
+            height=400
         )
         question_prompt_2 = st.text_area(
             "Question Prompt 2:",
