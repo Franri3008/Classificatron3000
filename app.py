@@ -258,35 +258,34 @@ def main():
     # 3) Labels Dictionary
     st.subheader("3) Labels Dictionary (JSON format)")
     st.markdown(
-        "**Required Format:** A JSON object where:\n"
-        "- **key** = label name\n"
-        "- **value** = label description\n\n"
-        "Example:\n```json\n{\n  \"LabelA\": \"Description A\",\n  \"LabelB\": \"Description B\"\n}\n```"
+        "**Required Format:** A JSON object where...\n"
+        "- **key**: label name\n"
+        "- **value**: label description\n\n"
     )
     labels_text = st.text_area(
-        "Labels dictionary (JSON format)",
-        value='{"LabelA": "Description A", "LabelB": "Description B"}'
+        "Labels dictionary:",
+        value='{"LabelA": "DescriptionA", "LabelB": "DescriptionB"}'
     )
 
     # 4) Top Value
-    top_value = st.number_input("Top value (default=10)", value=10)
+    top_value = st.number_input("Top value:", value=10)
 
     # 5) Embedding Option
     st.subheader("4) Embedding Data Option")
     emb_option = st.selectbox(
-        "Choose embedding option",
+        "Choose embedding option:",
         ["None", "CSV", "Tuple CSV"]
     )
     st.markdown(
-        "**Explanations:**\n"
+        "**Options:**\n"
         "- **None**: No pre-computed embeddings or similarity matrix. "
-        "Classificatron3000 will generate embeddings automatically.\n"
+        "Classificatron3000 will generate embeddings automatically (using GPT API).\n"
         "- **CSV**: Single CSV containing **similarity matrix** with columns:\n"
         "  - `Feature` (the feature name)\n"
-        "  - One column for each label from your labels dict.\n"
+        "  - One column for each label from the labels dict.\n"
         "- **Tuple CSV**: Two CSVs representing **feature embeddings** and **label embeddings**:\n"
         "  1) **Feature Embeddings**: must contain columns like `[id, ..., V1, V2, ...]` "
-        "     (where `id` and possibly `description` are present, then your embedding columns `V1, V2, ...`).\n"
+        "     (where `id` and possibly `description` are present, then the embedding columns `V1, V2, ...`).\n"
         "  2) **Label Embeddings**: must contain `[Label, V1, V2, ...]` "
         "     (label name and the embedding vectors)."
     )
