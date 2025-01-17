@@ -493,7 +493,7 @@ def main():
     question_prompt_1 = st.text_area(
         "Question Prompt 1:",
         value=default_question_1,
-        height=50
+        height=68
     )
 
     # Prompt 2
@@ -532,7 +532,7 @@ def main():
     question_prompt_2 = st.text_area(
         "Question Prompt 2:",
         value=default_question_2,
-        height=50
+        height=68
     )
 
     # 7) Run Classification
