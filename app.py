@@ -235,32 +235,122 @@ def Classificatron3000(df, labels: dict, emb_similarity, rel_scores, top=10):
 
 def main():
     st.title("Classificatron3000")
+
+    # 1) Main DataFrame
+    st.subheader("1) Main DataFrame CSV")
+    st.markdown(
+        "**Required Columns:**\n"
+        "- `id` (unique identifier for each row)\n"
+        "- `description` (text content that will be classified)"
+    )
     uploaded_df = st.file_uploader("Upload the main DataFrame CSV", type=["csv"])
+
+    # 2) Relatedness Scores
+    st.subheader("2) Relatedness Scores CSV")
+    st.markdown(
+        "**Required Columns:**\n"
+        "- `from` (source feature)\n"
+        "- `to` (target feature)\n"
+        "- `relatedness` (numeric score for how related the two features are)"
+    )
     uploaded_rel = st.file_uploader("Upload the relatedness scores CSV", type=["csv"])
-    labels_text = st.text_area("Labels dictionary (JSON format)", value='{"LabelA": "Description A", "LabelB": "Description B"}')
+
+    # 3) Labels Dictionary
+    st.subheader("3) Labels Dictionary (JSON format)")
+    st.markdown(
+        "**Required Format:** A JSON object where:\n"
+        "- **key** = label name\n"
+        "- **value** = label description\n\n"
+        "Example:\n```json\n{\n  \"LabelA\": \"Description A\",\n  \"LabelB\": \"Description B\"\n}\n```"
+    )
+    labels_text = st.text_area(
+        "Labels dictionary (JSON format)",
+        value='{"LabelA": "Description A", "LabelB": "Description B"}'
+    )
+
+    # 4) Top Value
     top_value = st.number_input("Top value (default=10)", value=10)
-    emb_option = st.selectbox("Choose embedding option", ["None", "CSV", "Tuple CSV"])
+
+    # 5) Embedding Option
+    st.subheader("4) Embedding Data Option")
+    emb_option = st.selectbox(
+        "Choose embedding option",
+        ["None", "CSV", "Tuple CSV"]
+    )
+    st.markdown(
+        "**Explanations:**\n"
+        "- **None**: No pre-computed embeddings or similarity matrix. "
+        "Classificatron3000 will generate embeddings automatically.\n"
+        "- **CSV**: Single CSV containing **similarity matrix** with columns:\n"
+        "  - `Feature` (the feature name)\n"
+        "  - One column for each label from your labels dict.\n"
+        "- **Tuple CSV**: Two CSVs representing **feature embeddings** and **label embeddings**:\n"
+        "  1) **Feature Embeddings**: must contain columns like `[id, ..., V1, V2, ...]` "
+        "     (where `id` and possibly `description` are present, then your embedding columns `V1, V2, ...`).\n"
+        "  2) **Label Embeddings**: must contain `[Label, V1, V2, ...]` "
+        "     (label name and the embedding vectors)."
+    )
 
     emb_data = None
 
+    # If user chooses "CSV" => we expect a single CSV with the precomputed similarity matrix
     if emb_option == "CSV":
+        st.subheader("5) Similarity Matrix CSV")
+        st.markdown(
+            "**Required Columns:**\n"
+            "- `Feature` (the feature name)\n"
+            "- One column for each label specified in your labels dictionary"
+        )
         uploaded_emb = st.file_uploader("Upload the similarity matrix CSV", type=["csv"])
         if uploaded_emb is not None:
             emb_data = pd.read_csv(uploaded_emb)
+
+    # If user chooses "Tuple CSV" => 2 CSVs for (features embeddings, labels embeddings)
     elif emb_option == "Tuple CSV":
+        st.subheader("5) Feature Embeddings CSV")
+        st.markdown(
+            "**Required Columns:**\n"
+            "- `id` (unique identifier)\n"
+            "- Optionally `description`\n"
+            "- Embedding columns like `V1, V2, ..., Vn`"
+        )
         uploaded_tuple_1 = st.file_uploader("Upload the first CSV (features embeddings)", type=["csv"])
+
+        st.subheader("6) Label Embeddings CSV")
+        st.markdown(
+            "**Required Columns:**\n"
+            "- `Label` (unique label name)\n"
+            "- Embedding columns like `V1, V2, ..., Vn`"
+        )
         uploaded_tuple_2 = st.file_uploader("Upload the second CSV (labels embeddings)", type=["csv"])
+
         if uploaded_tuple_1 is not None and uploaded_tuple_2 is not None:
             emb_data = (pd.read_csv(uploaded_tuple_1), pd.read_csv(uploaded_tuple_2))
 
+    # RUN CLASSIFICATION
     if st.button("Run Classification"):
         if uploaded_df is not None and uploaded_rel is not None:
             df = pd.read_csv(uploaded_df)
             rel_scores = pd.read_csv(uploaded_rel)
-            labels_dict = ast.literal_eval(labels_text)
+
+            # Convert text area to dictionary
+            try:
+                labels_dict = ast.literal_eval(labels_text)
+            except Exception as e:
+                st.error("Error in Labels Dictionary. Make sure it's valid JSON.")
+                return
+
+            # If embeddings set to None in the dropdown
             if emb_option == "None":
                 emb_data = None
-            Classificatron3000(df, labels_dict, emb_data, rel_scores, top=top_value)
+
+            Classificatron3000(
+                df,
+                labels_dict,
+                emb_data,
+                rel_scores,
+                top=top_value
+            )
             st.success("Classification completed. Check your output files.")
         else:
             st.error("Please upload both main DataFrame and relatedness CSV files.")
