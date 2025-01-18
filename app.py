@@ -18,6 +18,7 @@ from LanguageModels import CallLLM, BatchUploader, BatchChecker, BatchRetriever
 import os
 os.system("pip install --upgrade scikit-learn")
 
+
 def Classificatron3000(
     df,
     labels: dict,
@@ -30,32 +31,38 @@ def Classificatron3000(
     question_prompt_2=None
 ):
     """
-    This is the more recent version of CEPS Data Science Team Classification Tool.
+    Extended version of CEPS Data Science Team Classification Tool.
+
+    New Features:
+      1) Shows classification status in Streamlit (progress indicator).
+      2) Adds reversed ranking (label->feature).
+      3) Adds 'av' = average rank in the forward direction.
+      4) Adds 'av_r' = average rank in the reversed direction.
+
     Parameters:
-        df: a Pandas DataFrame containing the information to be classified. It must have:
-            - "id": a unique identifier for each row
-            - "description": the whole text to be classified
-        labels: a dictionary { label_name: label_description }
-        emb_similarity: Either None (compute embeddings), a single DataFrame (precomputed similarity),
-                        or a tuple of (features_embeddings_df, labels_embeddings_df).
-        rel_scores: a Pandas DataFrame with columns ['from', 'to', 'relatedness'].
-        top: How many features (labels) to keep (ranking cutoff).
-        context_prompt_1/question_prompt_1: custom prompt for the first classification step.
-        context_prompt_2/question_prompt_2: custom prompt for the second classification step.
+        df: DataFrame with columns:
+            - "id": unique identifier
+            - "description": text to classify
+        labels: dict { label_name: label_description }
+        emb_similarity: None (compute embeddings) OR
+            single DataFrame (similarity matrix) OR
+            tuple (features_embeddings_df, labels_embeddings_df)
+        rel_scores: DataFrame with ['from','to','relatedness']
+        top: how many labels per feature to keep in forward ranking
+        context_prompt_1, question_prompt_1: first classification step
+        context_prompt_2, question_prompt_2: second classification step
     """
 
-    # If no embeddings, compute them via OpenAI
+    # 1) EMBEDDINGS
     if emb_similarity is None:
         openai.api_key = st.secrets["openai"]["api_key"]
 
         def get_embedding(text, model="text-embedding-3-large"):
             response = openai.embeddings.create(input=[text], model=model)
-            embedding = response.data[0].embedding
-            return embedding
+            return response.data[0].embedding
 
-        embeddings = df['description'].apply(
-            lambda x: get_embedding(x, model="text-embedding-3-large")
-        )
+        # Compute embeddings for main DataFrame
+        embeddings = df["description"].apply(get_embedding)
         embedding_dim = len(embeddings.iloc[0])
         columns = [f"V{i+1}" for i in range(embedding_dim)]
         embeddings_df = pd.DataFrame(embeddings.tolist(), columns=columns)
@@ -63,129 +70,119 @@ def Classificatron3000(
         emb_similarity_df.drop(columns=["description"], inplace=True)
 
         # Compute embeddings for label descriptions
-        embeddings_data = []
-        for label, description in labels.items():
-            embedding = get_embedding(description)
-            embedding_dict = {"Label": label}
-            embedding_dict.update({f"V{i+1}": val for i, val in enumerate(embedding)})
-            embeddings_data.append(embedding_dict)
-        labels_df = pd.DataFrame(embeddings_data)
+        label_rows = []
+        for lbl, desc in labels.items():
+            vec = get_embedding(desc)
+            row = {"Label": lbl}
+            row.update({f"V{i+1}": v for i, v in enumerate(vec)})
+            label_rows.append(row)
+        labels_df = pd.DataFrame(label_rows)
+
         emb_similarity = (emb_similarity_df, labels_df)
 
-    # If tuple => compute similarity matrix
+    # 2) SIMILARITY MATRIX
     if isinstance(emb_similarity, tuple):
-        features_emb = emb_similarity[0]
-        labels_emb = emb_similarity[1]
+        feat_df, lbl_df = emb_similarity
+        feat_names = feat_df.iloc[:, 0]         # e.g., "id"
+        feat_vectors = feat_df.iloc[:, 2:].values
 
-        features_names = features_emb.iloc[:, 0]
-        features_embeddings = features_emb.iloc[:, 2:].values
+        label_names = lbl_df.iloc[:, 0]         # e.g., "Label"
+        label_vectors = lbl_df.iloc[:, 2:].values
 
-        labels_names = labels_emb.iloc[:, 0]
-        labels_embeddings = labels_emb.iloc[:, 2:].values
+        sim_matrix = cosine_similarity(feat_vectors, label_vectors)
+        sim_df = pd.DataFrame(sim_matrix, index=feat_names, columns=label_names)
 
-        similarity_matrix = cosine_similarity(features_embeddings, labels_embeddings)
-        similarity_df = pd.DataFrame(
-            similarity_matrix,
-            index=features_names,
-            columns=labels_names
+        # pivot => Feature, Label, Similarity
+        sim_list = (
+            sim_df.reset_index()
+            .melt(id_vars=sim_df.index.name or "index")
+            .rename(columns={"index": "Feature", "variable": "Label", "value": "Similarity"})
         )
-        index_name = similarity_df.index.name if similarity_df.index.name else 'index'
-        similarities_list = similarity_df.reset_index().melt(id_vars=index_name)
-        similarities_list.columns = ['Feature', 'Label', 'Similarity']
-        similarities = similarities_list.pivot(
-            index='Feature',
-            columns='Label',
-            values='Similarity'
-        )
-        similarities.columns.name = None
-        similarities.reset_index(inplace=True)
+        similarities = sim_list.pivot("Feature", "Label", "Similarity").reset_index()
+        # Reorder label columns in the same order as your labels dict
         similarities = similarities[["Feature"] + list(labels.keys())]
     else:
-        # Otherwise, it should be a final similarity DataFrame
+        # It's a single DataFrame with [Feature, label1, label2, ...]
         similarities = emb_similarity
 
-    # Melt similarity into tall format
+    # 3) FORWARD RANKING
+    # Melt so each row is (Feature, Label, Similarity)
     df_output = similarities.melt(
         id_vars=["Feature"],
         var_name="Label",
         value_name="Similarity"
     )
-    df_output['Label'] = pd.Categorical(
-        df_output['Label'],
-        categories=list(labels.keys()),
-        ordered=True
-    )
-    df_output = df_output.sort_values(by=["Feature", "Label"]).reset_index(drop=True)
-    df_output['Rank1'] = df_output.groupby('Feature')['Similarity'].rank(
-        ascending=False, method='dense'
+    # Ensure label order is consistent
+    df_output["Label"] = pd.Categorical(df_output["Label"], categories=list(labels.keys()), ordered=True)
+    df_output.sort_values(by=["Feature", "Label"], inplace=True)
+    df_output.reset_index(drop=True, inplace=True)
+
+    # Rank by Similarity => Rank1
+    df_output["Rank1"] = df_output.groupby("Feature")["Similarity"].rank(
+        ascending=False, method="dense"
     ).astype(int)
 
-    # Relatedness matrix
-    features_from = rel_scores['from'].unique()
-    features_to = rel_scores['to'].unique()
-    all_features = np.union1d(features_from, features_to)
-    n = len(all_features)
-    feature_to_index = {feature: idx for idx, feature in enumerate(all_features)}
-    relatedness_matrix = np.zeros((n, n))
-
+    # Build relatedness NxN
+    from_vals = rel_scores["from"].unique()
+    to_vals = rel_scores["to"].unique()
+    all_feats = np.union1d(from_vals, to_vals)
+    feat_idx_map = {f: i for i, f in enumerate(all_feats)}
+    n = len(all_feats)
+    rel_mat = np.zeros((n, n))
     for _, row in rel_scores.iterrows():
-        i = feature_to_index[row['from']]
-        j = feature_to_index[row['to']]
-        relatedness_matrix[i, j] = row['relatedness']
+        i = feat_idx_map[row["from"]]
+        j = feat_idx_map[row["to"]]
+        rel_mat[i, j] = row["relatedness"]
 
-    relatedness_df = pd.DataFrame(relatedness_matrix, index=all_features, columns=all_features)
+    rel_df = pd.DataFrame(rel_mat, index=all_feats, columns=all_feats)
 
-    # Align similarity with all_features
-    similarity = similarities.set_index("Feature")
-    similarity = similarity.reindex(all_features)
-    similarity = similarity.fillna(0)
+    # Align similarity with all_feats
+    sim_pivot = similarities.set_index("Feature").reindex(all_feats).fillna(0)
+    A = rel_df.values
+    B = sim_pivot.values
+    result_mat = A.dot(B)
 
-    # Multiply relatedness by similarity
-    A = relatedness_df.values
-    B = similarity.values
-    result_matrix = np.dot(A, B)
-    result_df = pd.DataFrame(result_matrix, index=all_features, columns=similarity.columns)
-    result_df = result_df.reset_index().rename(columns={"index": "Feature"})
+    res_df = pd.DataFrame(result_mat, index=all_feats, columns=sim_pivot.columns).reset_index()
+    res_df.rename(columns={"index": "Feature"}, inplace=True)
 
-    df_aux = result_df.melt(
+    aux = res_df.melt(
         id_vars=["Feature"],
         var_name="Label",
         value_name="Relatedness"
     )
-    df_aux['Label'] = pd.Categorical(
-        df_aux['Label'],
-        categories=list(labels.keys()),
-        ordered=True
-    )
-    df_aux = df_aux.sort_values(by=["Feature", "Label"]).reset_index(drop=True)
+    aux["Label"] = pd.Categorical(aux["Label"], categories=list(labels.keys()), ordered=True)
+    aux.sort_values(by=["Feature", "Label"], inplace=True)
+    aux.reset_index(drop=True, inplace=True)
 
+    # Merge => Rank2
     df_output = df_output.merge(
-        df_aux[['Feature', 'Label', 'Relatedness']],
-        on=['Feature', 'Label'],
-        how='left'
+        aux[["Feature", "Label", "Relatedness"]],
+        on=["Feature", "Label"],
+        how="left"
     )
-    df_output['Relatedness'] = df_output['Relatedness'].fillna(0)
-    df_output['Rank2'] = df_output.groupby('Feature')['Relatedness'].rank(
-        ascending=False, method='dense'
+    df_output["Relatedness"].fillna(0, inplace=True)
+    df_output["Rank2"] = df_output.groupby("Feature")["Relatedness"].rank(
+        ascending=False, method="dense"
     ).astype(int)
 
-    # Final combined ranking
-    df_output['CombinedRank'] = (df_output['Rank1'] + df_output['Rank2']) / 2
-    df_output['Rank3'] = df_output.groupby('Feature')['CombinedRank'].rank(
-        method='first'
-    ).astype(int)
-    df_output.drop(columns=['CombinedRank'], inplace=True)
+    # Combined => Rank3
+    df_output["CombinedRank"] = (df_output["Rank1"] + df_output["Rank2"]) / 2
+    df_output["Rank3"] = df_output.groupby("Feature")["CombinedRank"].rank(method="first").astype(int)
+    df_output.drop(columns=["CombinedRank"], inplace=True)
 
-    # Keep top N
-    new_df = df_output[df_output["Rank3"] <= top].copy()
-    new_df = new_df.merge(df[["id", "description"]], left_on="Feature", right_on="id", how="left")
+    # Keep top = N
+    df_top = df_output[df_output["Rank3"] <= top].copy()
 
-    # Build label strings
-    feature_dict = {t: [] for t in new_df["Feature"].unique()}
-    for idx, row in new_df.iterrows():
-        feature_dict[row["Feature"]].append(row["Label"] + f" ({labels[row['Label']]})")
+    # Merge text description
+    df_top = df_top.merge(df[["id", "description"]], left_on="Feature", right_on="id", how="left")
 
-    # === FIRST CLASSIFICATION PROMPT ===
+    # Build label strings => "Label (LabelDesc)"
+    feature_dict = {f: [] for f in df_top["Feature"].unique()}
+    for i, row in df_top.iterrows():
+        feature_dict[row["Feature"]].append(f"{row['Label']} ({labels[row['Label']]})")
+
+    # 4) FIRST CLASSIFICATION PROMPT
+    # Use user-provided or fallback
     if not context_prompt_1:
         context_prompt_1 = f"""
         Your task is to rank labels relevance to a specific feature based on how heavily the label draws on technical knowledge from this specific feature.
@@ -210,23 +207,21 @@ def Classificatron3000(
 
         Don't add anything else to your response.
         """.strip()
-
     if not question_prompt_1:
-        question_prompt_1 = (
-            "Given this context, provide your answer in the instructed format for this Feature:"
-        )
+        question_prompt_1 = "Given this context, provide your answer in the instructed format for this Feature:"
 
-    send_df = new_df[["Feature", "description"]].drop_duplicates().reset_index(drop=True)
+    # Build PART 1 batch
+    send_df = df_top[["Feature", "description"]].drop_duplicates().reset_index(drop=True)
     send_df["id"] = send_df.index
     send_df["Labels"] = send_df["Feature"].map(feature_dict).apply(lambda x: "; ".join(x))
 
-    # Create batch => PART 1
-    batch = BatchUploader(
+    st.write("**Starting GPT Classification (Step 1)**")
+    batch1 = BatchUploader(
         send_df,
-        "id",
-        "description",
-        context_prompt_1,
-        question_prompt_1,
+        id_col="id",
+        inf_col="description",
+        role=context_prompt_1,
+        question=question_prompt_1,
         label_col="Labels",
         model="gpt-4o",
         max_tokens=2000,
@@ -235,30 +230,31 @@ def Classificatron3000(
         path="C:/Users/HP/downloads/Batches"
     )
 
-    # Wait until batch is done
-    status = ""
-    while status not in ["completed", "failed"]:
+    # Show classification progress in Streamlit
+    status_placeholder = st.empty()
+    while True:
         time.sleep(5)
-        a = BatchChecker(batch.id)
-        status = a.status
+        check = BatchChecker(batch1.id)
+        status_placeholder.write(f"**Step 1 Batch Status**: {check.status}")
+        if check.status in ["completed", "failed"]:
+            break
 
-    # Retrieve results
+    # Retrieve => RankGPT
     send_df = BatchRetriever(send_df, "id", "C:/Users/HP/downloads/output.txt")
     df_output["RankGPT"] = None
-    for _, send_row in send_df.iterrows():
-        feature = send_row["Feature"]
-        response_dict = "ERROR"
+    for _, row_ in send_df.iterrows():
+        feat = row_["Feature"]
         try:
-            response_dict = ast.literal_eval(send_row["response"])
+            resp_dict = ast.literal_eval(row_["response"])
         except (ValueError, SyntaxError):
-            pass
-        matching_rows = df_output[df_output["Feature"] == feature]
-        for idx, current_row in matching_rows.iterrows():
-            lbl = current_row["Label"]
-            if lbl in response_dict:
-                df_output.at[idx, "RankGPT"] = response_dict[lbl]
+            resp_dict = {}
+        mask = df_output["Feature"] == feat
+        for idx in df_output[mask].index:
+            lab = df_output.at[idx, "Label"]
+            if lab in resp_dict:
+                df_output.at[idx, "RankGPT"] = resp_dict[lab]
 
-    # === SECOND CLASSIFICATION PROMPT ===
+    # 5) SECOND CLASSIFICATION PROMPT
     if not context_prompt_2:
         context_prompt_2 = """
         Your task is to determine whether a Label is relevant to a specific Feature by thinking in how heavily the Label draws on technical knowledge from this specific Feature. 
@@ -284,23 +280,20 @@ def Classificatron3000(
 
         Don't add anything else to your response.
         """.strip()
-
     if not question_prompt_2:
-        question_prompt_2 = (
-            "Given this context, provide your answer in the instructed format for this Feature:"
-        )
+        question_prompt_2 = "Given this context, provide your answer in the instructed format for this Feature:"
 
-    send_df = new_df[["Feature", "description"]].drop_duplicates().reset_index(drop=True)
+    send_df = df_top[["Feature", "description"]].drop_duplicates().reset_index(drop=True)
     send_df["id"] = send_df.index
     send_df["Labels"] = send_df["Feature"].map(feature_dict).apply(lambda x: "; ".join(x))
 
-    # Create batch => PART 2
-    batch = BatchUploader(
+    st.write("**Starting GPT Classification (Step 2)**")
+    batch2 = BatchUploader(
         send_df,
-        "id",
-        "description",
-        context_prompt_2,
-        question_prompt_2,
+        id_col="id",
+        inf_col="description",
+        role=context_prompt_2,
+        question=question_prompt_2,
         label_col="Labels",
         model="gpt-4o",
         max_tokens=2000,
@@ -309,29 +302,74 @@ def Classificatron3000(
         path="C:/Users/HP/downloads/Batches"
     )
 
-    # Wait until batch is done
-    status = ""
-    while status not in ["completed", "failed"]:
+    # Show classification progress
+    while True:
         time.sleep(5)
-        a = BatchChecker(batch.id)
-        status = a.status
+        check = BatchChecker(batch2.id)
+        status_placeholder.write(f"**Step 2 Batch Status**: {check.status}")
+        if check.status in ["completed", "failed"]:
+            break
 
-    # Retrieve results
+    # Retrieve => FinalCheck
     send_df = BatchRetriever(send_df, "id", "C:/Users/HP/downloads/output.txt")
     df_output["FinalCheck"] = None
-    for _, send_row in send_df.iterrows():
-        feature = send_row["Feature"]
+    for _, row_ in send_df.iterrows():
+        feat = row_["Feature"]
         try:
-            response_dict = ast.literal_eval(send_row["response"])
+            resp_dict = ast.literal_eval(row_["response"])
         except (ValueError, SyntaxError):
-            continue
-        matching_rows = df_output[df_output["Feature"] == feature]
-        for idx, current_row in matching_rows.iterrows():
-            lbl = current_row["Label"]
-            if lbl in response_dict:
-                df_output.at[idx, "FinalCheck"] = response_dict[lbl]
+            resp_dict = {}
+        mask = df_output["Feature"] == feat
+        for idx in df_output[mask].index:
+            lab = df_output.at[idx, "Label"]
+            if lab in resp_dict:
+                df_output.at[idx, "FinalCheck"] = resp_dict[lab]
 
-    # Save final files
+    # 6) ADD 'av' = average forward rank
+    df_output["RankGPT"] = pd.to_numeric(df_output["RankGPT"], errors="coerce")
+    df_output["av"] = df_output[["Rank1", "Rank2", "Rank3", "RankGPT"]].mean(axis=1, numeric_only=True)
+
+    # 7) REVERSED RANK => label->feature
+    # Copy df_output => rename columns
+    df_rev = df_output.copy()
+    df_rev.rename(
+        columns={
+            "Feature": "Label_rev",
+            "Label": "Feature_rev",
+            "Rank1": "Rank1_r",
+            "Rank2": "Rank2_r",
+            "Rank3": "Rank3_r",
+            "RankGPT": "RankGPT_r",
+            "Similarity": "Similarity_r",
+            "Relatedness": "Relatedness_r",
+        },
+        inplace=True
+    )
+    # Re-rank grouping by "Feature_rev" (the new "group")
+    df_rev["Rank1_r"] = df_rev.groupby("Feature_rev")["Similarity_r"]\
+        .rank(ascending=False, method="dense").astype(int)
+    df_rev["Rank2_r"] = df_rev.groupby("Feature_rev")["Relatedness_r"]\
+        .rank(ascending=False, method="dense").astype(int)
+    df_rev["Rank3_r"] = ((df_rev["Rank1_r"] + df_rev["Rank2_r"]) / 2).astype(int)
+    # For GPT => ascending smaller = more relevant
+    df_rev["RankGPT_r"] = df_rev.groupby("Feature_rev")["RankGPT_r"]\
+        .rank(ascending=True, method="dense")
+
+    # average => av_r
+    df_rev["av_r"] = df_rev[["Rank1_r", "Rank2_r", "Rank3_r", "RankGPT_r"]].mean(axis=1)
+
+    # Merge av_r back to df_output
+    merged = pd.merge(
+        df_output,
+        df_rev[["Label_rev","Feature_rev","av_r"]],
+        left_on=["Feature","Label"],
+        right_on=["Label_rev","Feature_rev"],
+        how="left"
+    ).drop(["Label_rev","Feature_rev"], axis=1)
+
+    df_output = merged  # update
+
+    # 8) SAVE FINAL FILES
     try:
         df_output.to_csv("C:/Users/HP/downloads/Classification.csv", index=False)
     except:
@@ -340,21 +378,21 @@ def Classificatron3000(
     final = df_output[df_output["FinalCheck"] == 1]
     final.to_csv("C:/Users/HP/downloads/ClassificationFiltered.csv", index=False)
 
-    # Build a crosswalk of "id" -> "top label"
+    # Crosswalk => "id" -> top label among final
     dict_result = {}
-    for i in df["id"].unique():
-        subdf = final[final["Feature"] == i].sort_values(by=["RankGPT"], ascending=True)
+    for fid in df["id"].unique():
+        sub = final[final["Feature"] == fid].sort_values(by=["RankGPT"], ascending=True)
         try:
-            dict_result[i] = subdf.head(1).iloc[0]["Label"]
+            dict_result[fid] = sub.head(1).iloc[0]["Label"]
         except:
-            dict_result[i] = "None"
+            dict_result[fid] = "None"
 
-    classif = pd.DataFrame(data=list(dict_result.items()), columns=["Features", "Labels"])
-    classif.to_csv("C:/Users/HP/downloads/Crosswalk.csv", index=False)
+    cross = pd.DataFrame(data=list(dict_result.items()), columns=["Features","Labels"])
+    cross.to_csv("C:/Users/HP/downloads/Crosswalk.csv", index=False)
 
 
 def main():
-    st.title("Classificatron3000 v1.0")
+    st.title("Classificatron3000 v2.0 (Reversed Rank, av & av_r)")
 
     # 1) Main DataFrame
     st.subheader("1) Main DataFrame CSV")
@@ -381,6 +419,7 @@ def main():
         "**Required Format:** A JSON object where...\n"
         "- **key**: label name\n"
         "- **value**: label description\n\n"
+        "Example: `{\"LabelA\": \"DescA\", \"LabelB\": \"DescB\"}`"
     )
     labels_text = st.text_area(
         "Labels dictionary:",
@@ -404,15 +443,13 @@ def main():
         "  - `Feature` (the feature name)\n"
         "  - One column for each label from the labels dict.\n"
         "- **Tuple CSV**: Two CSVs representing **feature embeddings** and **label embeddings**:\n"
-        "  1) **Feature Embeddings**: must contain columns like `[id, ..., V1, V2, ...]` "
-        "     (where `id` and possibly `description` are present, then the embedding columns `V1, V2, ...`).\n"
-        "  2) **Label Embeddings**: must contain `[Label, V1, V2, ...]` "
-        "     (label name and the embedding vectors)."
+        "  1) **Feature Embeddings**: must contain `[id, ..., V1, V2, ...]`\n"
+        "  2) **Label Embeddings**: must contain `[Label, V1, V2, ...]`"
     )
 
     emb_data = None
 
-    # CSV with similarity
+    # Option: CSV with similarity
     if emb_option == "CSV":
         st.subheader("5) Similarity Matrix CSV")
         st.markdown(
@@ -424,7 +461,7 @@ def main():
         if uploaded_emb is not None:
             emb_data = pd.read_csv(uploaded_emb)
 
-    # Tuple CSV => features + labels
+    # Option: Tuple CSV => features embeddings + labels embeddings
     elif emb_option == "Tuple CSV":
         st.subheader("5) Feature Embeddings CSV")
         st.markdown(
@@ -452,16 +489,11 @@ def main():
     # 6) Custom Prompts
     st.subheader("5) Custom Prompts")
     st.markdown(
-        "Below are **two sets of prompts** used in two classification steps. "
-        "**Note**: The special placeholder `<\\labels\\>` will be replaced "
-        "by the label dictionary (e.g. if we have `'LabelA': 'Desc A'` and `'LabelB': 'Desc B'`, "
-        "it becomes `LabelA (Desc A); LabelB (Desc B)`)."
+        "Below are **two sets of prompts** used in two classification steps.\n"
+        "The special placeholder `<\\labels\\>` will be replaced by your label dictionary."
     )
 
-    # Make two columns for prompts
     col1, col2 = st.columns(2)
-
-    # Column 1 => FIRST CLASSIFICATION PROMPTS
     with col1:
         st.markdown("#### First Classification Prompts")
         default_context_1 = f"""
@@ -471,99 +503,70 @@ def main():
         <\\labels\\>
 
         Ranking Rules:
-        - Use a scale of 1-{top_value} where 1 = most relevant label of the list, and {top_value} = least relevant label of the list.
+        - Use a scale of 1-{top_value} where 1 = most relevant label, and {top_value} = least relevant.
         - Base rankings on:
           * Direct application
-          * Technical overlap with the feature
+          * Technical overlap
           * Relevance
-          * Label's reliance on the feature's core principles
+          * Reliance on core principles
           * Integration in core products
-          * Significance of the label for the feature
+          * Significance
         - Ties are NOT allowed
 
-        Output Format if you had 3 labels (label names must be between quotes):
+        Output Format (for 3 labels):
 
-            {{"Label1": rank, "Label2": rank, "Label3": rank}}
-
-        Don't add anything else to your response.
+            {{"Label1": 1, "Label2": 2, "Label3": 3}}
         """.strip()
-
         default_question_1 = "Given this context, provide your answer in the instructed format for this Feature:"
+        context_prompt_1 = st.text_area("Context Prompt 1:", value=default_context_1, height=400)
+        question_prompt_1 = st.text_area("Question Prompt 1:", value=default_question_1, height=68)
 
-        context_prompt_1 = st.text_area(
-            "Context Prompt 1 (Ranking Prompt):",
-            value=default_context_1,
-            height=400
-        )
-        question_prompt_1 = st.text_area(
-            "Question Prompt 1:",
-            value=default_question_1,
-            height=68
-        )
-
-    # Column 2 => SECOND CLASSIFICATION PROMPTS
     with col2:
         st.markdown("#### Second Classification Prompts")
         default_context_2 = """
-        Your task is to determine whether a Label is relevant to a specific Feature by thinking in how heavily the Label draws on technical knowledge from this specific Feature. 
-        Available Labels:
-
+        Your task is to determine whether a Label is relevant to a specific Feature by thinking in how heavily the Label draws on technical knowledge from this specific Feature.
         <\\labels\\>
 
         Rules:
-        - Answer 0 if the Label is not relevant, 1 if it is.
-        - Base your answers on:
+        - Answer 0 if not relevant, 1 if relevant.
+        - Base on:
           * Direct application
-          * Technical overlap with the feature
+          * Technical overlap
           * Relevance
-          * Label's reliance on the feature's core principles
-          * Integration in core products
-          * Significance of the label for the feature
-        -You'll gain a point for every Label that you get correctly classified, but will lose 10 points for every Label incorrectly classified as 1.
-        -Aim to get the highest amount of points.
+          * Reliance on core principles
+          * Integration
+          * Significance
+        - You lose points for false positives
+        - Aim for maximum correctness
 
-        Output Format if you had 3 labels (label names must be between quotes):
-
-            {"Label1": response, "Label2": response, "Label3": response}
-
-        Don't add anything else to your response.
+        Output Format (for 3 labels):
+            {"Label1": 1, "Label2": 0, "Label3": 1}
         """.strip()
-
         default_question_2 = "Given this context, provide your answer in the instructed format for this Feature:"
+        context_prompt_2 = st.text_area("Context Prompt 2:", value=default_context_2, height=400)
+        question_prompt_2 = st.text_area("Question Prompt 2:", value=default_question_2, height=68)
 
-        context_prompt_2 = st.text_area(
-            "Context Prompt 2 (Relevance Prompt):",
-            value=default_context_2,
-            height=400
-        )
-        question_prompt_2 = st.text_area(
-            "Question Prompt 2:",
-            value=default_question_2,
-            height=68
-        )
-
-    # RUN CLASSIFICATION
+    # 7) RUN CLASSIFICATION
     if st.button("Run Classification"):
         if uploaded_df is not None and uploaded_rel is not None:
-            df = pd.read_csv(uploaded_df)
-            rel_scores = pd.read_csv(uploaded_rel)
+            df_main = pd.read_csv(uploaded_df)
+            df_rel = pd.read_csv(uploaded_rel)
 
-            # Convert text area to dictionary
+            # parse labels
             try:
                 labels_dict = ast.literal_eval(labels_text)
             except Exception as e:
                 st.error("Error in Labels Dictionary. Make sure it's valid JSON.")
                 return
 
-            # If embeddings set to None
             if emb_option == "None":
                 emb_data = None
 
             Classificatron3000(
-                df=df,
+                df=df_main,
                 labels=labels_dict,
                 emb_similarity=emb_data,
-                rel_scores=rel_scores,
+                rel_scores=df_rel,
                 top=top_value,
                 context_prompt_1=context_prompt_1,
                 question_prompt_1=question_prompt_1,
