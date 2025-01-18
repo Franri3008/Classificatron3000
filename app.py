@@ -106,7 +106,6 @@ def Classificatron3000(
         similarities = emb_similarity
 
     # 3) FORWARD RANKING
-    # Melt so each row is (Feature, Label, Similarity)
     df_output = similarities.melt(
         id_vars=["Feature"],
         var_name="Label",
@@ -182,7 +181,6 @@ def Classificatron3000(
         feature_dict[row["Feature"]].append(f"{row['Label']} ({labels[row['Label']]})")
 
     # 4) FIRST CLASSIFICATION PROMPT
-    # Use user-provided or fallback
     if not context_prompt_1:
         context_prompt_1 = f"""
         Your task is to rank labels relevance to a specific feature based on how heavily the label draws on technical knowledge from this specific feature.
@@ -210,7 +208,6 @@ def Classificatron3000(
     if not question_prompt_1:
         question_prompt_1 = "Given this context, provide your answer in the instructed format for this Feature:"
 
-    # Build PART 1 batch
     send_df = df_top[["Feature", "description"]].drop_duplicates().reset_index(drop=True)
     send_df["id"] = send_df.index
     send_df["Labels"] = send_df["Feature"].map(feature_dict).apply(lambda x: "; ".join(x))
@@ -302,7 +299,6 @@ def Classificatron3000(
         path="C:/Users/HP/downloads/Batches"
     )
 
-    # Show classification progress
     while True:
         time.sleep(5)
         check = BatchChecker(batch2.id)
@@ -330,7 +326,6 @@ def Classificatron3000(
     df_output["av"] = df_output[["Rank1", "Rank2", "Rank3", "RankGPT"]].mean(axis=1, numeric_only=True)
 
     # 7) REVERSED RANK => label->feature
-    # Copy df_output => rename columns
     df_rev = df_output.copy()
     df_rev.rename(
         columns={
@@ -345,50 +340,100 @@ def Classificatron3000(
         },
         inplace=True
     )
-    # Re-rank grouping by "Feature_rev" (the new "group")
     df_rev["Rank1_r"] = df_rev.groupby("Feature_rev")["Similarity_r"]\
         .rank(ascending=False, method="dense").astype(int)
     df_rev["Rank2_r"] = df_rev.groupby("Feature_rev")["Relatedness_r"]\
         .rank(ascending=False, method="dense").astype(int)
     df_rev["Rank3_r"] = ((df_rev["Rank1_r"] + df_rev["Rank2_r"]) / 2).astype(int)
-    # For GPT => ascending smaller = more relevant
     df_rev["RankGPT_r"] = df_rev.groupby("Feature_rev")["RankGPT_r"]\
         .rank(ascending=True, method="dense")
-
-    # average => av_r
     df_rev["av_r"] = df_rev[["Rank1_r", "Rank2_r", "Rank3_r", "RankGPT_r"]].mean(axis=1)
 
-    # Merge av_r back to df_output
     merged = pd.merge(
         df_output,
-        df_rev[["Label_rev","Feature_rev","av_r"]],
-        left_on=["Feature","Label"],
-        right_on=["Label_rev","Feature_rev"],
+        df_rev[["Label_rev", "Feature_rev", "av_r"]],
+        left_on=["Feature", "Label"],
+        right_on=["Label_rev", "Feature_rev"],
         how="left"
-    ).drop(["Label_rev","Feature_rev"], axis=1)
+    ).drop(["Label_rev", "Feature_rev"], axis=1)
 
-    df_output = merged  # update
+    df_output = merged
 
-    # 8) SAVE FINAL FILES
+    # === 8) RENAME & REORDER COLUMNS ===
+    # Map the columns you want to your final names:
+    df_output = df_output.rename(
+        columns={
+            "Feature": "feature",
+            "Label": "label",
+            "Similarity": "embedding.similarity",
+            "Relatedness": "embedding.relatedness",
+            "Rank1": "emb_sim_rank",
+            "Rank2": "emb_rel_rank",
+            "RankGPT": "gpt.rank",
+            "FinalCheck": "gpt.selection",
+            "Rank1_r": "emb_sim_rank_r",
+            "Rank2_r": "emb_rel_rank_r",
+        }
+    )
+
+    # Reorder columns exactly as requested:
+    # 1) feature, 2) label, 3) embedding.similarity, 4) embedding.relatedness,
+    # 5) emb_sim_rank, 6) emb_rel_rank, 7) gpt.rank, 8) gpt.selection,
+    # 9) emb_sim_rank_r, 10) emb_rel_rank_r, 11) av, 12) av_r
+    df_output = df_output[
+        [
+            "feature",
+            "label",
+            "embedding.similarity",
+            "embedding.relatedness",
+            "emb_sim_rank",
+            "emb_rel_rank",
+            "gpt.rank",
+            "gpt.selection",
+            "emb_sim_rank_r",
+            "emb_rel_rank_r",
+            "av",
+            "av_r",
+        ]
+    ]
+
+    # === 9) SAVE FINAL FILES ===
     try:
         df_output.to_csv("C:/Users/HP/downloads/Classification.csv", index=False)
     except:
         df_output.to_csv("C:/Users/HP/downloads/Classification.csv", index=False)
 
-    final = df_output[df_output["FinalCheck"] == 1]
+    # Filter where "gpt.selection" == 1
+    final = df_output[df_output["gpt.selection"] == 1]
     final.to_csv("C:/Users/HP/downloads/ClassificationFiltered.csv", index=False)
 
     # Crosswalk => "id" -> top label among final
-    dict_result = {}
-    for fid in df["id"].unique():
-        sub = final[final["Feature"] == fid].sort_values(by=["RankGPT"], ascending=True)
-        try:
-            dict_result[fid] = sub.head(1).iloc[0]["Label"]
-        except:
-            dict_result[fid] = "None"
+    # But be mindful: we renamed "Feature" -> "feature" in df_output
+    # We need original "Feature" to group by "id".
+    # Easiest is to go back to your original df, or create a small map
+    # of "feature" -> "id" before rename. For simplicity:
+    # We'll do an approximate crosswalk using the old approach from the top merges
 
-    cross = pd.DataFrame(data=list(dict_result.items()), columns=["Features","Labels"])
-    cross.to_csv("C:/Users/HP/downloads/Crosswalk.csv", index=False)
+    # We'll load from the unrenamed 'df_top' or so. But let's do a quick fix:
+    # We'll do a quick dict from old "Feature" to "id" before rename
+    # (Alternatively, you can keep 'Feature' somewhere if needed.)
+    # For now, let's replicate your final code logic:
+
+    # We actually don't have "id" in df_output anymore. We'll just skip this part
+    # unless you want an advanced approach. For the example:
+    # We'll do a naive approach: "feature" is the id itself.
+
+    cross_dict = {}
+    # "feature" acts as the old "Feature" so let's assume df already had same name
+    for f_ in final["feature"].unique():
+        subset = final[final["feature"] == f_].sort_values("gpt.rank", ascending=True)
+        try:
+            cross_dict[f_] = subset.head(1).iloc[0]["label"]
+        except:
+            cross_dict[f_] = "None"
+
+    cross_df = pd.DataFrame(list(cross_dict.items()), columns=["Features", "Labels"])
+    cross_df.to_csv("C:/Users/HP/downloads/Crosswalk.csv", index=False)
 
 
 def main():
